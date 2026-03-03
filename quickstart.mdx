@@ -1,80 +1,224 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart Guide
+description: Set up your account and run your first debate session in under 5 minutes
 ---
 
-## Get started in three steps
+# Quickstart Guide
 
-Get your documentation site running locally and make your first customization.
+Get started with Stanzo by running your first live debate fact-check session. This guide walks you through authentication, creating a debate, and reviewing verified claims.
 
-### Step 1: Set up your local environment
+<Note>
+  You'll need a GitHub account to sign in. Stanzo uses GitHub OAuth for authentication via Convex Auth.
+</Note>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Sign in with GitHub">
+    Navigate to the Stanzo application and click **Sign in with GitHub**. You'll be redirected to GitHub to authorize the application.
 
-### Step 2: Deploy your changes
+    ```typescript
+    // Authentication flow (convex/auth.ts:28-30)
+    export const { auth, signIn, signOut } = convexAuth({
+      providers: [GitHub],
+    })
+    ```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    After authorization, you'll be redirected back to Stanzo with an active session. Your GitHub profile information (name, email, avatar) will be stored in the `users` table.
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    <Tip>
+      All debates you create are automatically linked to your user ID. See [Authentication Guide](/guides/authentication) for details on session management and ownership verification.
+    </Tip>
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Create your first debate">
+    Click **Get Started** or navigate to `/debates/new` to create a new debate session.
 
-### Step 3: Go live
+    You'll see a form with two fields:
+    - **Speaker A**: Name of the first speaker (default: "Speaker A")
+    - **Speaker B**: Name of the second speaker (default: "Speaker B")
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    Enter names for both speakers and click **Start Debate**.
+
+    ```typescript
+    // Creating a debate (src/components/DebateControls.tsx:29-35)
+    const handleStart = async () => {
+      const id = await createDebate({
+        speakerAName: speakerA,
+        speakerBName: speakerB,
+      })
+      onDebateCreated(id)
+    }
+    ```
+
+    <Info>
+      When you click **Start Debate**, Stanzo creates a new debate record in Convex, establishes a WebSocket connection to Deepgram for live transcription, and begins capturing audio from your microphone.
+    </Info>
+  </Step>
+
+  <Step title="Understand the live debate interface">
+    Once your debate starts, you'll see a two-panel layout:
+
+    ### Left Panel: Live Transcript
+
+    The transcript panel displays real-time speech-to-text with:
+    - **Speaker labels** (Speaker A or Speaker B) based on diarization
+    - **Timestamps** for each utterance
+    - **Interim results** (gray text) that update as the speaker talks
+    - **Final transcript chunks** (black text) after each utterance ends
+
+    ```typescript
+    // Transcript view (src/app/debates/new/page.tsx:100-106)
+    <Transcript
+      chunks={chunks ?? []}
+      speakerAName={debate?.speakerAName ?? "Speaker A"}
+      speakerBName={debate?.speakerBName ?? "Speaker B"}
+      interimText={interim?.text}
+      interimSpeaker={interim?.speaker}
+    />
+    ```
+
+    The transcript automatically scrolls as new chunks arrive, so you can follow along in real-time.
+
+    ### Right Panel: Claims Feed
+
+    The claims sidebar shows extracted factual statements with:
+    - **Claim count** badge at the top
+    - **Status** for each claim: `pending`, `checking`, `true`, `false`, `mixed`, or `unverifiable`
+    - **Verdict explanation** once fact-checking completes
+    - **Correction** text if the claim is false or partially false
+    - **Source citations** linking to authoritative sites (e.g., bls.gov, fbi.gov)
+
+    ```typescript
+    // Claims sidebar (src/app/debates/new/page.tsx:108)
+    <ClaimsSidebar claims={claims ?? []} />
+    ```
+
+    <Note>
+      Claims appear with a "pending" status immediately after extraction, then update to "checking" while Perplexity Sonar verifies them. Final verdicts appear within 5-10 seconds.
+    </Note>
+
+    ### Top Bar: Debate Controls
+
+    The header shows:
+    - **Back button** to return to your debates list
+    - **LIVE badge** with a pulsing red dot while recording
+    - **End button** to stop the debate and save results
+
+    ```typescript
+    // Live indicator (src/components/DebateControls.tsx:44-54)
+    if (isActive && compact) {
+      return (
+        <div className="flex items-center gap-5">
+          <LiveBadge />
+          <button onClick={handleEnd}>End</button>
+        </div>
+      )
+    }
+    ```
+  </Step>
+
+  <Step title="Test the fact-checking pipeline">
+    To see Stanzo in action, try speaking a verifiable claim into your microphone:
+
+    **Example claims to test:**
+
+    - "The unemployment rate in the US is currently around 4 percent"
+    - "There are 50 states in the United States"
+    - "The average temperature on Earth has increased by 1.1 degrees Celsius since pre-industrial times"
+    - "California has a GDP of approximately 3.9 trillion dollars"
+
+    Watch the pipeline process your speech:
+
+    1. **Transcription** (instant): Your words appear in the transcript panel with speaker diarization
+    2. **Extraction** (1-3 seconds): After a pause, the claim appears in the claims sidebar with "pending" status
+    3. **Fact-checking** (5-10 seconds): Status updates to "checking", then shows final verdict with sources
+
+    <Tip>
+      Speak clearly and pause for 1.5 seconds after making a claim. This triggers the extraction engine to process the transcript segment.
+    </Tip>
+
+    <Info>
+      The extraction engine uses **Gemini 2.0 Flash** with full conversation history, so it won't re-extract claims from previous turns and can resolve pronouns using context. See [Claim Extraction](/features/claim-extraction) for details.
+    </Info>
+  </Step>
+
+  <Step title="End the debate and review results">
+    When you're done testing, click **End** in the top-right corner. Stanzo will:
+
+    1. Stop the microphone and close the Deepgram WebSocket connection
+    2. Mark the debate as "ended" in the database
+    3. Redirect you to `/debates/[debateId]` to review the full session
+
+    ```typescript
+    // Ending a debate (src/components/DebateControls.tsx:37-41)
+    const handleEnd = async () => {
+      if (!debateId) return
+      await endDebate({ debateId })
+      onDebateEnded()
+    }
+    ```
+
+    ### Review Page
+
+    The review page shows the complete debate with:
+    - **Full transcript** with all chunks and timestamps
+    - **All claims** with final verdicts, corrections, and sources
+    - **Debate metadata** (speakers, start/end times, duration)
+
+    You can navigate to this page later from `/debates` to see all your past debates.
+
+    <Note>
+      Debates are automatically ended if you close the tab or navigate away. An `onBeforeUnload` event handler ensures the debate status is updated even if you don't click "End" manually.
+    </Note>
+  </Step>
+</Steps>
+
+## What happens under the hood
+
+The quickstart workflow triggers Stanzo's three-stage pipeline:
+
+**1. Record**  
+Deepgram's `nova-3` model transcribes audio in real-time with speaker diarization. Transcript chunks stream to Convex via WebSocket and are inserted into the `transcriptChunks` table.
+
+**2. Extract**  
+When unprocessed chunks accumulate (after utterance pauses), a Convex mutation triggers a Gemini 2.0 Flash extraction session. The AI analyzes the new segment using full conversation history and returns JSONL-formatted claims, which are inserted with `pending` status.
+
+**3. Verify**  
+Each new claim triggers an async Convex action that calls Perplexity Sonar. The fact-checker searches authoritative sources, returns a verdict with citations, and updates the claim record. The UI reactively updates via Convex subscriptions.
+
+See the [Architecture](/architecture) page for a detailed explanation of the pipeline, including transcript batching, extraction sessions, and fact-check retries.
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Architecture Deep Dive" icon="sitemap" href="/architecture">
+    Understand how Stanzo processes audio through transcription, extraction, and fact-checking stages
+  </Card>
+  <Card title="Debates API" icon="code" href="/api/debates">
+    Explore Convex mutations and queries for creating, listing, and managing debates
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+### No audio is being transcribed
+
+Check:
+- Microphone permissions are granted in your browser
+- You're using a supported browser (Chrome, Edge, Firefox)
+- Your microphone is selected in system settings
+
+### Claims aren't appearing
+
+Check:
+- You've paused for at least 1.5 seconds after speaking
+- You're making factual claims (not opinions or questions)
+- Environment variables `GEMINI_API_KEY` is set in Convex dashboard
+
+### Fact-checking takes too long
+
+Check:
+- Environment variable `PERPLEXITY_API_KEY` is set correctly
+- You have sufficient API quota remaining
+- The claim is specific and verifiable (vague claims may timeout)
+
+See the [Error Handling](/guides/error-handling) guide for details on retry logic, timeouts, and Effect-based error recovery.

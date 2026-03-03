@@ -1,0 +1,324 @@
+---
+title: Configuration & Deployment
+description: Configure and deploy Stanzo to production
+---
+
+This guide covers project configuration, development workflow, and deployment processes for both the Next.js frontend and Convex backend.
+
+## Project Structure
+
+Stanzo uses a dual-runtime architecture:
+
+- **Next.js 16** - Frontend application with React 19
+- **Convex** - Backend for real-time data, authentication, and serverless functions
+
+Both systems run in parallel during development and are deployed separately in production.
+
+## Development Configuration
+
+### Package Scripts
+
+Stanzo uses npm scripts defined in `package.json` for development and deployment:
+
+| Script | Command | Description |
+|--------|---------|-------------|
+| `dev` | `npm run dev` | Runs Next.js and Convex in parallel |
+| `dev:next` | `npm run dev:next` | Runs only Next.js dev server on port 3000 |
+| `dev:convex` | `npm run dev:convex` | Runs only Convex dev environment |
+| `build` | `npm run build` | Builds Next.js for production |
+| `start` | `npm run start` | Starts Next.js production server |
+| `lint` | `npm run lint` | Runs oxlint for code quality |
+| `format` | `npm run format` | Formats code with oxfmt |
+
+### Parallel Development Setup
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+
+    This installs all dependencies including:
+    - Next.js 16.1.6
+    - Convex 1.32.0
+    - React 19.2.4
+    - Authentication (@convex-dev/auth)
+    - AI SDKs (Deepgram, Google Gemini, Perplexity)
+  </Step>
+
+  <Step title="Start development servers">
+    Run both Next.js and Convex in parallel:
+
+    ```bash
+    npm run dev
+    ```
+
+    This uses `npm-run-all --parallel` to run:
+    - `next dev` on `http://localhost:3000`
+    - `convex dev` for the Convex backend
+
+    <Info>
+      The parallel execution ensures both the frontend and backend hot-reload during development. Changes to Convex functions are automatically deployed to your dev environment.
+    </Info>
+  </Step>
+
+  <Step title="Run servers independently (optional)">
+    For debugging or testing, you can run each server separately:
+
+    **Terminal 1 - Next.js:**
+    ```bash
+    npm run dev:next
+    ```
+
+    **Terminal 2 - Convex:**
+    ```bash
+    npm run dev:convex
+    ```
+  </Step>
+</Steps>
+
+## Next.js Configuration
+
+### next.config.ts
+
+Stanzo uses a minimal Next.js configuration (`next.config.ts`):
+
+```typescript
+import { NextConfig } from "next"
+
+const config: NextConfig = {}
+
+export default config
+```
+
+This uses Next.js defaults with no custom overrides. The application relies on:
+
+- **App Router** - Modern routing with server and client components
+- **Tailwind CSS 4.2.1** - Styling with PostCSS
+- **TypeScript 5.9.3** - Full type safety
+
+<Info>
+  If you need to customize Next.js behavior (e.g., image domains, redirects, headers), add configuration options to the `config` object.
+</Info>
+
+### TypeScript Configuration
+
+The project uses strict TypeScript settings. All `.ts` and `.tsx` files are type-checked during:
+- Development (in your IDE)
+- Build time (`npm run build`)
+- Linting (`npm run lint`)
+
+## Convex Configuration
+
+### Authentication Setup
+
+Convex authentication is configured in `convex/auth.config.ts`:
+
+```typescript
+export default {
+  providers: [
+    {
+      domain: process.env.CONVEX_SITE_URL,
+      applicationID: "convex",
+    },
+  ],
+}
+```
+
+<Warning>
+  Ensure `CONVEX_SITE_URL` is set in your Convex environment variables (see [Environment Setup](/deployment/environment-setup)) for authentication to work properly.
+</Warning>
+
+### Convex Functions
+
+Stanzo includes several Convex functions:
+
+- **Actions** (`convex/factCheck.ts`, `convex/claimExtraction.ts`, `convex/deepgramToken.ts`)
+  - Call external APIs (Perplexity, Gemini, Deepgram)
+  - Run asynchronously and can be long-running
+  - Use Effect-TS for retry logic and error handling
+
+- **Mutations** - Update database state
+- **Queries** - Read database state
+- **Internal functions** - Private functions not exposed to clients
+
+<Info>
+  Convex functions automatically get type-safe client bindings. Import from `convex/_generated/api` to call functions with full TypeScript support.
+</Info>
+
+## Building for Production
+
+<Steps>
+  <Step title="Build Next.js">
+    ```bash
+    npm run build
+    ```
+
+    This creates an optimized production build in `.next/`:
+    - Minifies JavaScript and CSS
+    - Optimizes images and fonts
+    - Generates static pages where possible
+    - Creates server-side bundles
+
+    Verify the build completes without errors before deploying.
+  </Step>
+
+  <Step title="Test production build locally">
+    ```bash
+    npm run start
+    ```
+
+    This starts the Next.js production server on `http://localhost:3000`. Test critical functionality before deploying.
+  </Step>
+
+  <Step title="Deploy Convex backend">
+    Deploy Convex to production:
+
+    ```bash
+    npx convex deploy --prod
+    ```
+
+    This:
+    - Pushes your Convex functions to production
+    - Updates your database schema
+    - Provides a production deployment URL
+
+    <Warning>
+      Set all required environment variables in production before deploying (see [Environment Setup](/deployment/environment-setup#production-deployment)).
+    </Warning>
+  </Step>
+</Steps>
+
+## Deployment Platforms
+
+### Recommended: Vercel + Convex
+
+Stanzo is optimized for deployment on Vercel with Convex:
+
+<Steps>
+  <Step title="Deploy Convex (first)">
+    ```bash
+    npx convex deploy --prod
+    ```
+
+    Note the production URL (e.g., `https://happy-animal-123.convex.cloud`).
+  </Step>
+
+  <Step title="Set Convex environment variables">
+    ```bash
+    npx convex env set DEEPGRAM_API_KEY your_key --prod
+    npx convex env set GEMINI_API_KEY your_key --prod
+    npx convex env set PERPLEXITY_API_KEY your_key --prod
+    npx convex env set CONVEX_SITE_URL https://your-domain.vercel.app --prod
+    ```
+  </Step>
+
+  <Step title="Deploy to Vercel">
+    1. Push your code to GitHub
+    2. Import the repository in Vercel
+    3. Add environment variable in Vercel dashboard:
+       - `NEXT_PUBLIC_CONVEX_URL` = your Convex production URL
+    4. Deploy
+
+    <Info>
+      Vercel automatically detects Next.js and uses optimal build settings. No additional configuration needed.
+    </Info>
+  </Step>
+
+  <Step title="Update CONVEX_SITE_URL (if needed)">
+    After getting your Vercel domain, update the Convex environment variable:
+
+    ```bash
+    npx convex env set CONVEX_SITE_URL https://your-domain.vercel.app --prod
+    ```
+  </Step>
+</Steps>
+
+### Alternative Platforms
+
+Stanzo can deploy to any Next.js-compatible platform:
+
+- **Netlify** - Similar to Vercel, with automatic Next.js detection
+- **Self-hosted** - Use `npm run build && npm run start` with a Node.js server
+- **Docker** - Create a Dockerfile with Node.js 20+ and run the production build
+
+All platforms require:
+1. Node.js 20 or higher
+2. `NEXT_PUBLIC_CONVEX_URL` environment variable
+3. Convex backend deployed separately
+
+## Production Considerations
+
+### Environment Variables
+
+<Warning>
+  Double-check all environment variables are set correctly in both Next.js (hosting platform) and Convex (via CLI) before going live.
+</Warning>
+
+### Analytics and Monitoring
+
+Stanzo includes Vercel Analytics and Speed Insights (`package.json:20-21`):
+
+```json
+"@vercel/analytics": "1.6.1",
+"@vercel/speed-insights": "1.3.1"
+```
+
+These automatically activate on Vercel deployments and provide:
+- Real-time traffic analytics
+- Core Web Vitals monitoring
+- Performance insights
+
+### Database Migrations
+
+Convex handles schema migrations automatically. When deploying schema changes:
+
+```bash
+npx convex deploy --prod
+```
+
+Convex will:
+1. Validate the new schema
+2. Migrate existing data if compatible
+3. Warn about breaking changes
+
+<Warning>
+  Test schema changes in development (`convex dev`) before deploying to production. Breaking changes may require data migration scripts.
+</Warning>
+
+### Scaling Considerations
+
+- **Next.js**: Scales automatically on Vercel with serverless functions
+- **Convex**: Scales automatically based on usage
+- **API Rate Limits**: Monitor usage for Deepgram, Gemini, and Perplexity to avoid hitting rate limits
+
+## Troubleshooting
+
+### Build Failures
+
+If `npm run build` fails:
+
+1. Check TypeScript errors: `npx tsc --noEmit`
+2. Check for missing dependencies: `npm install`
+3. Verify environment variables are set
+4. Clear build cache: `rm -rf .next`
+
+### Convex Deployment Issues
+
+If `npx convex deploy` fails:
+
+1. Verify you're logged in: `npx convex login`
+2. Check schema validity: `npx convex dev` (locally)
+3. Review function errors in Convex dashboard
+
+### Runtime Errors
+
+Common production issues:
+
+- **"CONVEX_URL is not defined"**: Set `NEXT_PUBLIC_CONVEX_URL` in hosting platform
+- **"API key not set" errors**: Set API keys in Convex with `--prod` flag
+- **Authentication failures**: Verify `CONVEX_SITE_URL` matches your deployed domain
+
+<Info>
+  Check the Convex dashboard logs for detailed error messages from actions and mutations.
+</Info>

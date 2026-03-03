@@ -1,0 +1,111 @@
+---
+title: Live Transcription
+description: Real-time audio transcription with speaker diarization powered by Deepgram Nova-3
+---
+
+Stanzo captures live debate audio and converts it to text in real-time using Deepgram's Nova-3 model. The system automatically identifies different speakers and streams interim results as participants talk.
+
+## How It Works
+
+The transcription pipeline uses a WebSocket connection to stream audio directly from the user's microphone to Deepgram's API:
+
+1. **Token Generation**: A temporary Deepgram access token is minted server-side (5-minute TTL) for secure client connections
+2. **Audio Capture**: Browser MediaRecorder API captures audio with echo cancellation and noise suppression
+3. **WebSocket Streaming**: Audio chunks (250ms intervals) are sent to Deepgram via WebSocket
+4. **Real-time Processing**: Deepgram returns both interim and final transcripts with speaker labels
+5. **Database Storage**: Final transcripts are saved to Convex with timestamps and speaker attribution
+
+<Info>
+The system uses **utterance end detection** (1.5 second pause) to trigger claim extraction automatically when speakers finish statements.
+</Info>
+
+## Speaker Diarization
+
+Deepgram's diarization feature (`diarize: true`) automatically distinguishes between speakers without requiring voice training:
+
+```typescript
+const connection = client.listen.live({
+  model: "nova-3",
+  language: "en",
+  smart_format: true,
+  punctuate: true,
+  diarize: true,
+  interim_results: true,
+  utterance_end_ms: 1500,
+})
+```
+
+Each word in the transcript includes a `speaker` field (0 or 1), allowing Stanzo to attribute claims to the correct debate participant. The first word's speaker label determines the speaker for the entire transcript chunk.
+
+## Transcript Storage
+
+Final transcripts are stored with rich metadata:
+
+```typescript
+await insertChunk({
+  debateId: activeDebateId,
+  speaker: speaker === 0 ? 0 : 1,  // Normalized to 0 or 1
+  text: transcript,
+  startTime,                        // Timestamp in seconds
+  endTime: startTime + duration,
+})
+```
+
+This enables:
+- Precise timeline reconstruction
+- Speaker-specific filtering
+- Context-aware claim extraction
+
+## Connection Management
+
+The WebSocket connection requires active maintenance:
+
+**Keep-Alive**: A ping is sent every 8 seconds to prevent connection timeout:
+
+```typescript
+keepAliveRef.current = setInterval(() => {
+  connection.keepAlive()
+}, 8000)
+```
+
+**Graceful Shutdown**: When recording stops, resources are cleaned up in order:
+1. Clear keep-alive interval
+2. Stop MediaRecorder
+3. Close WebSocket connection
+4. Release microphone access
+
+<Tip>
+The audio is encoded as **audio/webm with Opus codec** for optimal streaming quality and bandwidth efficiency.
+</Tip>
+
+## Interim Results
+
+While Deepgram processes audio, interim (non-final) transcripts provide immediate visual feedback:
+
+```typescript
+if (!data.is_final) {
+  setInterim({ text: transcript, speaker })
+  return  // Don't save to database yet
+}
+```
+
+Interim results are displayed in the UI but not persisted, ensuring only verified final transcripts enter the claim extraction pipeline.
+
+## Error Handling
+
+The system monitors connection health and provides user-facing error messages:
+
+- **Connection Errors**: Network issues or API failures
+- **Microphone Access**: Permission denied or device unavailable
+- **Token Expiration**: Automatic detection when 5-minute token expires
+
+<Note>
+All audio processing happens in real-time with no server-side recording. Audio is streamed directly from the browser to Deepgram's API.
+</Note>
+
+## Implementation Reference
+
+Key files:
+- `src/hooks/useDeepgram.ts:33-126` - WebSocket connection and audio streaming logic
+- `convex/deepgramToken.ts:5-31` - Secure token minting with TTL
+- `convex/transcriptChunks.ts:21-36` - Database persistence

@@ -1,0 +1,347 @@
+---
+title: "Authentication"
+description: "GitHub OAuth setup and user session management with Convex Auth"
+---
+
+## Overview
+
+Stanzo uses [Convex Auth](https://labs.convex.dev/auth) for authentication, which provides:
+- GitHub OAuth integration
+- User session management
+- Automatic database tables for users, sessions, and accounts
+- Type-safe authentication checks in queries and mutations
+
+<Note>
+Convex Auth is built on top of [Auth.js](https://authjs.dev/) (formerly NextAuth.js) and integrates seamlessly with Convex's backend.
+</Note>
+
+## Setup
+
+Authentication is configured in two files:
+
+### 1. Auth Configuration (`convex/auth.ts`)
+
+```typescript
+import GitHub from "@auth/core/providers/github"
+import { convexAuth } from "@convex-dev/auth/server"
+
+export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
+  providers: [GitHub],
+})
+```
+
+This exports:
+- **`auth`**: HTTP handler for OAuth callbacks
+- **`signIn`/`signOut`**: Mutations to start/end user sessions
+- **`store`**: Internal mutation for session storage
+- **`isAuthenticated`**: Helper to check if user is logged in
+
+### 2. Auth Config (`convex/auth.config.ts`)
+
+```typescript
+export default {
+  providers: [
+    {
+      domain: process.env.CONVEX_SITE_URL,
+      applicationID: "convex",
+    },
+  ],
+}
+```
+
+This configures the OAuth redirect URLs. The `CONVEX_SITE_URL` environment variable should point to your Convex deployment.
+
+## Environment Variables
+
+For GitHub OAuth to work, you need to set these in your Convex dashboard:
+
+```bash
+AUTH_GITHUB_ID=your_github_oauth_app_client_id
+AUTH_GITHUB_SECRET=your_github_oauth_app_client_secret
+CONVEX_SITE_URL=https://your-app.convex.site
+```
+
+<Tip>
+Create a GitHub OAuth App at https://github.com/settings/developers. Set the authorization callback URL to `https://your-app.convex.site/api/auth/callback/github`.
+</Tip>
+
+## Database Schema
+
+Convex Auth automatically adds these tables to your schema:
+
+```typescript
+import { authTables } from "@convex-dev/auth/server"
+import { defineSchema } from "convex/server"
+
+export default defineSchema({
+  ...authTables, // Adds: users, authSessions, authAccounts, etc.
+  // ... your custom tables
+})
+```
+
+Key tables:
+- **`users`**: User profiles (name, email, image)
+- **`authSessions`**: Active user sessions
+- **`authAccounts`**: Links users to OAuth providers (GitHub, etc.)
+
+## Authentication Checks
+
+### In Mutations
+
+Use `getAuthUserId()` to get the current user's ID and enforce authentication:
+
+```typescript
+import { getAuthUserId } from "@convex-dev/auth/server"
+import { mutation } from "./_generated/server"
+
+export const create = mutation({
+  args: {
+    speakerAName: v.string(),
+    speakerBName: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx)
+    if (!userId) throw new Error("Not authenticated")
+
+    return await ctx.db.insert("debates", {
+      userId, // Link debate to current user
+      speakerAName: args.speakerAName,
+      speakerBName: args.speakerBName,
+      status: "active",
+      startedAt: Date.now(),
+    })
+  },
+})
+```
+
+**How it works:**
+- `getAuthUserId(ctx)` returns `Id<"users"> | null`
+- If the user is logged in, it returns their user ID
+- If not logged in, it returns `null`
+
+<Warning>
+Always check for `null` before using `userId`. Throwing an error prevents unauthorized access.
+</Warning>
+
+### In Queries
+
+Queries can also check authentication to filter data:
+
+```typescript
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx)
+    if (!userId) return [] // Return empty array for logged-out users
+
+    return await ctx.db
+      .query("debates")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .order("desc")
+      .collect()
+  },
+})
+```
+
+This pattern:
+- Returns an empty array for logged-out users
+- Returns only the current user's debates for logged-in users
+
+### Ownership Verification
+
+When modifying resources, verify the current user owns them:
+
+```typescript
+export const end = mutation({
+  args: { debateId: v.id("debates") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx)
+    if (!userId) throw new Error("Not authenticated")
+
+    const debate = await ctx.db.get(args.debateId)
+    if (!debate || debate.userId !== userId) {
+      throw new Error("Not found") // Don't reveal if debate exists
+    }
+
+    await ctx.db.patch(args.debateId, {
+      status: "ended",
+      endedAt: Date.now(),
+    })
+  },
+})
+```
+
+<Note>
+Returning "Not found" instead of "Unauthorized" prevents leaking information about whether a debate ID exists.
+</Note>
+
+## Frontend Integration
+
+### Sign In
+
+Trigger GitHub OAuth flow:
+
+```typescript
+import { useAuthActions } from "@convex-dev/auth/react"
+
+function LoginButton() {
+  const { signIn } = useAuthActions()
+
+  return (
+    <button onClick={() => signIn("github")}>
+      Sign in with GitHub
+    </button>
+  )
+}
+```
+
+This:
+1. Redirects user to GitHub
+2. User authorizes your app
+3. GitHub redirects back to your app
+4. Session is created in Convex
+
+### Sign Out
+
+```typescript
+function LogoutButton() {
+  const { signOut } = useAuthActions()
+
+  return <button onClick={() => signOut()}>Sign out</button>
+}
+```
+
+### Get Current User
+
+```typescript
+import { useQuery } from "convex/react"
+import { api } from "@/convex/_generated/api"
+
+function UserProfile() {
+  const user = useQuery(api.users.current)
+
+  if (!user) return <div>Not logged in</div>
+
+  return (
+    <div>
+      <img src={user.image} alt={user.name} />
+      <span>{user.name}</span>
+    </div>
+  )
+}
+```
+
+<Tip>
+You'll need to create the `api.users.current` query yourself. Convex Auth doesn't provide this by default, but it's simple:
+
+```typescript
+export const current = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx)
+    if (!userId) return null
+    return await ctx.db.get(userId)
+  },
+})
+```
+</Tip>
+
+## Session Management
+
+### Session Lifetime
+
+Convex Auth sessions are:
+- Stored in HTTP-only cookies (secure against XSS)
+- Valid for 30 days by default
+- Automatically refreshed on activity
+
+### Session Storage
+
+Sessions are stored in the `authSessions` table:
+
+```typescript
+{
+  _id: Id<"authSessions">,
+  userId: Id<"users">,
+  sessionToken: string,
+  expires: number,
+}
+```
+
+When `getAuthUserId(ctx)` is called, Convex:
+1. Reads the session token from the HTTP cookie
+2. Looks up the session in `authSessions`
+3. Verifies it hasn't expired
+4. Returns the associated `userId`
+
+### Multiple Devices
+
+Users can be logged in on multiple devices simultaneously. Each device has its own session in the `authSessions` table.
+
+## Security Considerations
+
+### HTTPS Required
+
+GitHub OAuth requires HTTPS. In development:
+- Convex provides `https://<your-deployment>.convex.site` automatically
+- Your frontend should use the Convex dev server or ngrok
+
+### Token Storage
+
+Session tokens are:
+- Stored in HTTP-only cookies (inaccessible to JavaScript)
+- Sent only over HTTPS
+- Scoped to your domain
+
+This prevents XSS and CSRF attacks.
+
+### Authorization Pattern
+
+Always follow this pattern in mutations:
+
+```typescript
+// 1. Check authentication
+const userId = await getAuthUserId(ctx)
+if (!userId) throw new Error("Not authenticated")
+
+// 2. Load resource
+const resource = await ctx.db.get(resourceId)
+
+// 3. Check ownership
+if (!resource || resource.userId !== userId) {
+  throw new Error("Not found")
+}
+
+// 4. Perform action
+await ctx.db.patch(resourceId, { /* ... */ })
+```
+
+This ensures:
+- Only logged-in users can perform actions
+- Users can only modify their own resources
+- Resource existence isn't leaked to unauthorized users
+
+## Troubleshooting
+
+### "Not authenticated" errors
+
+Check:
+1. `AUTH_GITHUB_ID` and `AUTH_GITHUB_SECRET` are set in Convex dashboard
+2. GitHub OAuth app callback URL matches your Convex deployment
+3. User has completed the OAuth flow
+
+### Sessions not persisting
+
+Check:
+1. Cookies are enabled in browser
+2. Your frontend is served over HTTPS (or localhost in dev)
+3. Cookie domain matches your deployment URL
+
+### "providers is not iterable" error
+
+Ensure `convex/auth.config.ts` exports a **default** export:
+
+```typescript
+export default { /* config */ } // ✅ Correct
+export const config = { /* config */ } // ❌ Wrong
+```

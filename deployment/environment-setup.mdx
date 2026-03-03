@@ -1,0 +1,195 @@
+---
+title: Environment Setup
+description: Configure API keys and environment variables for Stanzo
+---
+
+Stanzo requires several API keys to function properly. This guide walks you through setting up all required environment variables for both local development and production deployment.
+
+## Required API Keys
+
+Stanzo integrates with three external services that require API keys:
+
+- **Deepgram** - Real-time speech-to-text transcription
+- **Google Gemini** - AI-powered claim extraction from debate transcripts
+- **Perplexity** - Fact-checking and verification of claims
+
+## Local Development Setup
+
+<Steps>
+  <Step title="Create environment files">
+    Create two separate environment files in your project root:
+
+    **`.env.local`** - For Next.js environment variables:
+    ```bash
+    NEXT_PUBLIC_CONVEX_URL=https://your-deployment.convex.cloud
+    ```
+
+    **`.env`** - For Convex environment variables (managed separately):
+    ```bash
+    # This file is for reference only
+    # Actual Convex env vars are set via `npx convex env set`
+    ```
+
+    <Info>
+      Next.js and Convex use different environment variable systems. Next.js reads from `.env.local`, while Convex environment variables must be set using the Convex CLI.
+    </Info>
+  </Step>
+
+  <Step title="Get Deepgram API Key">
+    Deepgram provides real-time speech-to-text transcription for debate audio.
+
+    1. Sign up at [deepgram.com](https://deepgram.com)
+    2. Navigate to your API Keys section
+    3. Create a new API key
+    4. Set it in Convex:
+
+    ```bash
+    npx convex env set DEEPGRAM_API_KEY your_deepgram_api_key_here
+    ```
+
+    <Info>
+      The Deepgram API key is used in `convex/deepgramToken.ts:12` to mint temporary client tokens for browser-based transcription.
+    </Info>
+  </Step>
+
+  <Step title="Get Google Gemini API Key">
+    Google Gemini powers the claim extraction system that identifies factual statements in debate transcripts.
+
+    1. Visit [Google AI Studio](https://aistudio.google.com/app/apikey)
+    2. Create a new API key
+    3. Set it in Convex:
+
+    ```bash
+    npx convex env set GEMINI_API_KEY your_gemini_api_key_here
+    ```
+
+    <Info>
+      Used in `convex/claimExtraction.ts:119` with the `gemini-2.5-flash` model to extract verifiable claims from debate transcripts.
+    </Info>
+  </Step>
+
+  <Step title="Get Perplexity API Key">
+    Perplexity provides real-time fact-checking capabilities with source citations.
+
+    1. Sign up at [perplexity.ai](https://www.perplexity.ai)
+    2. Navigate to API settings
+    3. Generate a new API key
+    4. Set it in Convex:
+
+    ```bash
+    npx convex env set PERPLEXITY_API_KEY your_perplexity_api_key_here
+    ```
+
+    <Info>
+      Used in `convex/factCheck.ts:107` with the `sonar` model to verify claims and provide corrections with citations.
+    </Info>
+  </Step>
+
+  <Step title="Set Convex URL">
+    After deploying your Convex backend, set the deployment URL in your Next.js environment:
+
+    1. Run `npx convex dev` to get your development URL, or `npx convex deploy` for production
+    2. Copy the deployment URL (e.g., `https://your-deployment.convex.cloud`)
+    3. Add to `.env.local`:
+
+    ```bash
+    NEXT_PUBLIC_CONVEX_URL=https://your-deployment.convex.cloud
+    ```
+
+    <Warning>
+      The `NEXT_PUBLIC_` prefix is required for this variable to be accessible in the browser. This URL is used in `src/app/providers.tsx:7` to initialize the Convex client.
+    </Warning>
+  </Step>
+
+  <Step title="Configure Convex Site URL (optional)">
+    For authentication to work properly, set your site URL in Convex:
+
+    ```bash
+    npx convex env set CONVEX_SITE_URL http://localhost:3000
+    ```
+
+    For production:
+
+    ```bash
+    npx convex env set CONVEX_SITE_URL https://your-domain.com
+    ```
+
+    <Info>
+      This is used in `convex/auth.config.ts:4` for the authentication provider configuration.
+    </Info>
+  </Step>
+</Steps>
+
+## Environment Variable Reference
+
+### Next.js Environment Variables
+
+Set these in `.env.local`:
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|----------|
+| `NEXT_PUBLIC_CONVEX_URL` | Yes | Convex deployment URL | `https://happy-animal-123.convex.cloud` |
+
+### Convex Environment Variables
+
+Set these using `npx convex env set VARIABLE_NAME value`:
+
+| Variable | Required | Description | Used In |
+|----------|----------|-------------|----------|
+| `DEEPGRAM_API_KEY` | Yes | Deepgram API key for speech-to-text | `convex/deepgramToken.ts` |
+| `GEMINI_API_KEY` | Yes | Google Gemini API key for claim extraction | `convex/claimExtraction.ts` |
+| `PERPLEXITY_API_KEY` | Yes | Perplexity API key for fact-checking | `convex/factCheck.ts` |
+| `CONVEX_SITE_URL` | Recommended | Your application URL for auth | `convex/auth.config.ts` |
+
+## Verifying Your Setup
+
+After setting all environment variables, verify your setup:
+
+<Steps>
+  <Step title="Check Convex environment variables">
+    ```bash
+    npx convex env list
+    ```
+
+    You should see all four Convex variables listed (keys will be partially hidden for security).
+  </Step>
+
+  <Step title="Check Next.js environment">
+    Start the development server and check the browser console:
+
+    ```bash
+    npm run dev
+    ```
+
+    The Convex client should initialize without errors.
+  </Step>
+
+  <Step title="Test API integrations">
+    Create a test debate and verify:
+    - Audio transcription works (Deepgram)
+    - Claims are extracted from transcript (Gemini)
+    - Claims are fact-checked (Perplexity)
+  </Step>
+</Steps>
+
+<Warning>
+  Never commit API keys to version control. Ensure `.env.local` and `.env` are in your `.gitignore` file.
+</Warning>
+
+## Production Deployment
+
+For production deployments (e.g., Vercel):
+
+1. Set `NEXT_PUBLIC_CONVEX_URL` in your hosting platform's environment variables
+2. Deploy your Convex backend with `npx convex deploy --prod`
+3. Set all Convex environment variables in production:
+   ```bash
+   npx convex env set DEEPGRAM_API_KEY your_key --prod
+   npx convex env set GEMINI_API_KEY your_key --prod
+   npx convex env set PERPLEXITY_API_KEY your_key --prod
+   npx convex env set CONVEX_SITE_URL https://your-domain.com --prod
+   ```
+
+<Info>
+  The `--prod` flag ensures environment variables are set in your production Convex deployment, not development.
+</Info>

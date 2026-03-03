@@ -1,0 +1,292 @@
+---
+title: Real-Time Updates
+description: Live UI updates powered by Convex reactive subscriptions with zero polling
+---
+
+Stanzo's interface updates live as debates progress, claims are extracted, and fact-checks complete. This happens through **Convex reactive subscriptions** - a fundamentally different architecture than traditional polling.
+
+## Reactive Subscriptions vs Polling
+
+### Traditional Polling (Not Used)
+
+```typescript
+// ❌ Wasteful: Constant server requests even when nothing changes
+useEffect(() => {
+  const interval = setInterval(async () => {
+    const data = await fetch('/api/claims')
+    setClaims(data)
+  }, 1000)  // Check every second
+  return () => clearInterval(interval)
+}, [])
+```
+
+Problems:
+- Unnecessary server load
+- Delayed updates (up to 1 second lag)
+- Scales poorly with many concurrent users
+
+### Convex Reactive Subscriptions (Used)
+
+```typescript
+// ✅ Efficient: Server pushes changes only when data updates
+const claims = useQuery(api.claims.listByDebate, { debateId })
+```
+
+Benefits:
+- **Zero latency**: Updates pushed instantly when data changes
+- **Zero waste**: No requests when data is unchanged
+- **Automatic**: No manual subscription management
+
+<Info>
+Convex maintains a persistent WebSocket connection to the client. When database writes occur, the server automatically computes which queries are affected and pushes updates only to subscribed clients.
+</Info>
+
+## How It Works
+
+### 1. Initial Page Load
+
+Stanzo uses Next.js server-side rendering with preloaded queries:
+
+```typescript
+// Server-side (app/debates/[debateId]/page.tsx)
+const [preloadedDebate, preloadedChunks, preloadedClaims] = await Promise.all([
+  preloadQuery(api.debates.get, { debateId: id }, { token }),
+  preloadQuery(api.transcriptChunks.listByDebate, { debateId: id }, { token }),
+  preloadQuery(api.claims.listByDebate, { debateId: id }, { token }),
+])
+```
+
+This fetches initial data on the server, eliminating loading spinners.
+
+### 2. Client-Side Hydration
+
+The client component connects to Convex and subscribes to live updates:
+
+```typescript
+// Client-side (components/DebateReview.tsx)
+export function DebateReview({
+  preloadedDebate,
+  preloadedChunks,
+  preloadedClaims,
+}) {
+  const debate = usePreloadedQuery(preloadedDebate)
+  const chunks = usePreloadedQuery(preloadedChunks)
+  const claims = usePreloadedQuery(preloadedClaims)
+  
+  // ... render with live data
+}
+```
+
+`usePreloadedQuery` establishes a reactive subscription using the server-fetched data as the initial value.
+
+### 3. Live Updates
+
+When database changes occur, Convex automatically re-runs affected queries and pushes updates:
+
+```typescript
+// Backend mutation triggers automatic UI update
+export const saveClaim = internalMutation({
+  handler: async (ctx, args) => {
+    const claimId = await ctx.db.insert("claims", {
+      ...args,
+      status: "pending",
+      extractedAt: Date.now(),
+    })
+    // No manual notification needed - Convex handles it
+  },
+})
+```
+
+The UI receiving `claims` via `useQuery(api.claims.listByDebate)` will **automatically re-render** with the new claim.
+
+<Tip>
+Convex's query reactivity is **granular**. Only components subscribed to changed data re-render, not the entire page.
+</Tip>
+
+## Status Flow Visualization
+
+Claims progress through statuses, with the UI updating at each step:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  PENDING → CHECKING → TRUE/FALSE/MIXED/UNVERIFIABLE         │
+└─────────────────────────────────────────────────────────────┘
+     ↑           ↑              ↑
+     │           │              │
+  Extracted   API call      Verdict
+  by Gemini    starts      received
+```
+
+### Pending State
+
+```typescript
+const claimId = await ctx.db.insert("claims", {
+  ...args,
+  status: "pending",  // ← UI shows "Pending" badge
+  extractedAt: Date.now(),
+})
+```
+
+UI displays:
+```tsx
+<span className="text-[10px] font-bold text-[#ccc] uppercase">
+  Pending
+</span>
+```
+
+### Checking State
+
+```typescript
+await ctx.runMutation(internal.claims.updateStatus, {
+  claimId: args.claimId,
+  status: "checking",  // ← UI shows "Checking" badge
+})
+```
+
+UI displays:
+```tsx
+<span className="text-[10px] font-bold text-[#ccc] uppercase">
+  Checking
+</span>
+```
+
+### Verdict State
+
+```typescript
+await ctx.runMutation(internal.claims.updateStatus, {
+  claimId: args.claimId,
+  status: factCheck.status,  // ← "true", "false", "mixed", or "unverifiable"
+  verdict: factCheck.verdict,
+  correction: factCheck.correction,
+  sources: factCheck.citations,
+})
+```
+
+UI displays:
+```tsx
+{/* Verdict badges get bold borders */}
+<span className="inline-block border border-black px-1.5 py-px text-[10px] font-bold uppercase">
+  {label}  {/* TRUE, FALSE, MIXED */}
+</span>
+
+{/* Verdict text appears */}
+<p className="text-[13px] leading-normal text-[#555]">
+  {claim.verdict}
+</p>
+
+{/* Sources appear as links */}
+<SourcesList urls={claim.sources} />
+```
+
+All transitions happen automatically without component logic tracking state changes.
+
+## Auto-Scrolling
+
+The claims sidebar automatically scrolls to show new content:
+
+```typescript
+export function ClaimsSidebar({ claims }: ClaimsSidebarProps) {
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const lastClaim = claims[claims.length - 1]
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [claims.length, lastClaim?.status, lastClaim?.verdict])
+  
+  // ...
+}
+```
+
+This triggers on:
+- **New claims added** (`claims.length` changes)
+- **Status updates** (`lastClaim?.status` changes from "pending" → "checking")
+- **Verdict arrives** (`lastClaim?.verdict` populated)
+
+<Note>
+The effect dependencies ensure scrolling happens both when new claims appear AND when existing claims update with verdicts.
+</Note>
+
+## Database Indexes for Performance
+
+Convex uses indexes to efficiently query claims by debate:
+
+```typescript
+// schema.ts
+claims: defineTable({
+  debateId: v.id("debates"),
+  speaker: v.union(v.literal(0), v.literal(1)),
+  claimText: v.string(),
+  status: v.union(
+    v.literal("pending"),
+    v.literal("checking"),
+    v.literal("true"),
+    v.literal("false"),
+    v.literal("mixed"),
+    v.literal("unverifiable"),
+  ),
+  // ...
+})
+  .index("by_debate", ["debateId"])
+  .index("by_debate_and_status", ["debateId", "status"])
+```
+
+Query using the index:
+
+```typescript
+export const listByDebate = query({
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("claims")
+      .withIndex("by_debate", (q) => q.eq("debateId", args.debateId))
+      .collect()
+  },
+})
+```
+
+Even with thousands of claims, indexed queries return results in milliseconds.
+
+## Transcript Streaming
+
+Transcript chunks also update live as audio is processed:
+
+```typescript
+// Frontend
+const chunks = useQuery(api.transcriptChunks.listByDebate, { debateId })
+
+// Backend (automatically triggers re-render)
+export const insert = mutation({
+  handler: async (ctx, args) => {
+    await ctx.db.insert("transcriptChunks", {
+      ...args,
+      processedForClaims: false,
+    })
+  },
+})
+```
+
+As Deepgram sends final transcripts every few seconds, new chunks appear in the UI without page refresh.
+
+## Optimistic vs Server-Driven Updates
+
+Stanzo uses **server-driven updates** exclusively:
+
+- ✅ **Source of truth**: Database state is always correct
+- ✅ **Simplicity**: No optimistic update rollback logic needed
+- ✅ **Multi-user sync**: All viewers see identical state
+
+Trade-off:
+- Small network latency (typically {"<"}100ms with WebSocket)
+
+For a fact-checking app where accuracy matters more than perceived speed, this is the right choice.
+
+<Info>
+Convex's architecture makes real-time updates **default behavior** rather than requiring special setup. Every query is reactive unless explicitly opted out.
+</Info>
+
+## Implementation Reference
+
+Key files:
+- `src/components/DebateReview.tsx:22-24` - Reactive query subscriptions
+- `src/components/ClaimsSidebar.tsx:15-17` - Auto-scroll on updates
+- `src/app/debates/[debateId]/page.tsx:43-52` - SSR with preloaded queries
+- `convex/claims.ts:27-35` - Indexed queries for performance

@@ -1,0 +1,232 @@
+---
+title: Fact-Checking
+description: Automated claim verification using Perplexity Sonar with citations and source linking
+---
+
+Every claim extracted by Stanzo is automatically fact-checked using Perplexity's Sonar model, which searches the web for current information and returns verdicts with source citations.
+
+## Verification Flow
+
+When a claim is saved, it immediately enters the fact-checking pipeline:
+
+1. **Status: pending** → Claim is queued for verification
+2. **Status: checking** → Perplexity API call is in progress
+3. **Status: true/false/mixed/unverifiable** → Verdict is returned with explanation
+
+```typescript
+export const check = internalAction({
+  handler: async (ctx, args) => {
+    // Mark as checking
+    await ctx.runMutation(internal.claims.updateStatus, {
+      claimId: args.claimId,
+      status: "checking",
+    })
+    
+    // Call Perplexity API
+    const factCheck = await callPerplexity(apiKey, claim.claimText)
+    
+    // Update with verdict
+    await ctx.runMutation(internal.claims.updateStatus, {
+      claimId: args.claimId,
+      status: factCheck.status,
+      verdict: factCheck.verdict,
+      correction: factCheck.correction,
+      sources: factCheck.citations,
+    })
+  },
+})
+```
+
+<Info>
+Stanzo uses the **Sonar** model specifically because it has real-time web access, enabling verification of current events and recent statistics that base LLMs don't know about.
+</Info>
+
+## Verdict Types
+
+Perplexity returns one of four structured verdicts:
+
+| Status | Meaning | UI Treatment |
+|--------|---------|-------------|
+| `true` | Claim is factually accurate | Bold border badge |
+| `false` | Claim is factually incorrect | Bold border badge + correction |
+| `mixed` | Claim is partially true | Bold border badge + nuance |
+| `unverifiable` | Cannot confirm or deny | Gray text label |
+
+### Example Responses
+
+**True claim:**
+```json
+{
+  "status": "true",
+  "verdict": "The unemployment rate was 3.7% in January 2024 according to BLS data.",
+  "correction": null
+}
+```
+
+**False claim:**
+```json
+{
+  "status": "false",
+  "verdict": "The federal deficit in 2023 was $1.7 trillion, not $2.5 trillion.",
+  "correction": "Actual deficit: $1.7 trillion per Treasury Department"
+}
+```
+
+**Mixed claim:**
+```json
+{
+  "status": "mixed",
+  "verdict": "While GDP grew 3.1% in 2023, this excludes Q4 which saw 2.8% growth.",
+  "correction": "Full year average was 2.9%, not 3.1%"
+}
+```
+
+## Citations and Sources
+
+Perplexity automatically includes source URLs in its responses:
+
+```typescript
+const response = await client.chat.completions.create({
+  model: "sonar",
+  messages: [...],
+})
+
+const citations = (response.citations ?? []).map(String)
+```
+
+Citations are displayed as clickable links in the UI:
+
+```typescript
+// From ClaimCard.tsx
+function SourcesList({ urls }: { urls: string[] }) {
+  const parsed = urls
+    .map((url) => ({ url, hostname: parseHostname(url) }))
+    .filter((s): s is { url: string; hostname: string } => s.hostname !== null)
+
+  return (
+    <p className="mt-3 text-[10px] text-[#aaa]">
+      {parsed.map(({ url, hostname }, i) => (
+        <a href={url} target="_blank" rel="noopener noreferrer">
+          {hostname}
+        </a>
+      ))}
+    </p>
+  )
+}
+```
+
+Domains are extracted and displayed (e.g., `bls.gov`, `treasury.gov`) rather than full URLs for cleaner presentation.
+
+<Tip>
+Stanzo strips inline citation markers like `[1]` from verdicts using regex before displaying them to users.
+</Tip>
+
+## System Prompt
+
+The fact-checking prompt enforces concise, structured responses:
+
+```typescript
+{
+  role: "system",
+  content: "You are a fact-checker. Evaluate the following claim and respond with ONLY a JSON object containing: status (one of: true, false, mixed, unverifiable), verdict (brief explanation), correction (if false or mixed, the correct information; otherwise null). Keep verdict and correction to ~30 words each."
+}
+```
+
+This prevents verbose explanations and ensures consistent JSON parsing.
+
+## Resilient Parsing
+
+Perplexity's response is parsed with fallback logic to handle malformed JSON:
+
+```typescript
+function parseJsonLoose(text: string): unknown {
+  try {
+    return JSON.parse(text)  // Try standard parse
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/)  // Extract first JSON object
+    return match ? JSON.parse(match[0]) : {}
+  }
+}
+```
+
+If parsing fails entirely, a fallback verdict is used:
+
+```typescript
+const fallbackResult = {
+  status: "unverifiable" as const,
+  verdict: "Could not parse result",
+  correction: undefined,
+}
+```
+
+## Effect Library Integration
+
+Stanzo uses the Effect library for sophisticated error handling and retries:
+
+### Exponential Backoff Retry
+
+```typescript
+Effect.retry({
+  schedule: Schedule.exponential(Duration.seconds(1)).pipe(
+    Schedule.intersect(Schedule.recurs(3)),
+  ),
+  while: (e) => e instanceof PerplexityApiError,
+})
+```
+
+This retries failed API calls:
+- **Attempt 1**: Immediate
+- **Attempt 2**: 1 second delay
+- **Attempt 3**: 2 second delay
+- **Attempt 4**: 4 second delay
+
+Only `PerplexityApiError` instances trigger retries (network errors, rate limits), not schema validation failures.
+
+### Timeout Protection
+
+```typescript
+Effect.timeout(Duration.seconds(30))
+```
+
+Fact-checking is capped at 30 seconds. If Perplexity doesn't respond, the claim is marked as `unverifiable`.
+
+### Error Recovery
+
+```typescript
+const factCheck = await Effect.runPromise(
+  callPerplexity(apiKey, claim.claimText).pipe(
+    Effect.catchAll((e) => {
+      console.error("Fact check failed:", e)
+      return Effect.succeed({
+        ...fallbackResult,
+        citations: [] as string[],
+      })
+    }),
+  ),
+)
+```
+
+Even if all retries fail, the pipeline continues by saving an "unverifiable" verdict rather than crashing.
+
+<Note>
+Effect's type-safe error handling ensures errors are logged for debugging while maintaining a smooth user experience.
+</Note>
+
+## Real-Time UI Updates
+
+Because Stanzo uses Convex reactive queries, the UI automatically updates as fact-check statuses change:
+
+```typescript
+// User's browser automatically receives updates
+const claims = useQuery(api.claims.listByDebate, { debateId })
+```
+
+No polling required. When a claim transitions from `checking` to `true`, the UI reflects the change instantly.
+
+## Implementation Reference
+
+Key files:
+- `convex/factCheck.ts:93-131` - Main fact-check action
+- `convex/factCheck.ts:39-91` - Perplexity API call with retry logic
+- `convex/factCheck.ts:11-26` - Schema validation and fallback handling
+- `src/components/ClaimCard.tsx:22-72` - Verdict rendering with citations

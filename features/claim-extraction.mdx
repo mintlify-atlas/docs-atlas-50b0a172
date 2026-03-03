@@ -1,0 +1,189 @@
+---
+title: Claim Extraction
+description: AI-powered claim identification using Gemini 2.5 Flash with multi-turn context awareness
+---
+
+Stanzo uses Google's Gemini 2.5 Flash model to identify factual claims in debate transcripts. Unlike simple pattern matching, the system maintains conversation history to resolve pronouns, understand context, and avoid duplicate extractions.
+
+## Multi-Turn Sessions
+
+Claim extraction is **stateful**. Each debate has an `extractionSession` that stores the complete conversation history between the user and the AI:
+
+```typescript
+const session = await ctx.runQuery(
+  internal.extractionSessions.getByDebate,
+  { debateId: args.debateId },
+)
+const existingMessages: Message[] = session?.messages ?? []
+```
+
+When new transcript chunks arrive:
+1. Load previous conversation from the session
+2. Append new transcript as a user message
+3. Send full history to Gemini
+4. Save Gemini's response back to the session
+
+This allows the AI to reference earlier statements and maintain coherent understanding across the entire debate.
+
+<Info>
+**Why context matters**: If a speaker says "He claimed unemployment is 10%" later in the debate, the AI uses conversation history to identify which speaker said it and what the full context was.
+</Info>
+
+## System Prompt Design
+
+The extraction prompt emphasizes precision and context awareness:
+
+```typescript
+function buildSystemPrompt(speakerA: string, speakerB: string): string {
+  return `You are a factual claim extractor for a live debate between ${speakerA} (speaker 0) and ${speakerB} (speaker 1).
+
+Each turn, I provide a new transcript segment. You have the full conversation history.
+
+Rules:
+- ONLY extract claims from the NEW segment in my latest message
+- Do NOT re-extract claims from previous turns
+- Extract specific, verifiable factual claims (statistics, dates, named facts, causal claims)
+- Extract the factual core when mixed with opinion
+- Ignore purely opinion/prediction/subjective statements
+- Use context to resolve pronouns and references`
+}
+```
+
+Key constraints:
+- **New claims only**: Prevents duplicates by only analyzing the latest segment
+- **Verifiable facts**: Filters out opinions like "I think taxes are too high"
+- **Factual core extraction**: Separates "I believe unemployment is 10%" into the verifiable claim "unemployment is 10%"
+- **Pronoun resolution**: Uses history to turn "he said" into explicit speaker attribution
+
+## JSONL Streaming
+
+Gemini streams responses in JSONL format (JSON Lines) - one claim per line:
+
+```json
+{"speaker":0,"claimText":"Unemployment rate is 3.7%","originalTranscriptExcerpt":"According to the latest data, unemployment is 3.7%"}
+{"speaker":1,"claimText":"Federal deficit reached $1.7 trillion in 2023","originalTranscriptExcerpt":"The deficit last year was $1.7 trillion"}
+```
+
+If no claims exist, the model returns:
+```
+NO_CLAIMS
+```
+
+### Stream Processing
+
+Claims are parsed incrementally as they stream in:
+
+```typescript
+let buffer = ""
+for await (const chunk of stream) {
+  const text = chunk.text ?? ""
+  buffer += text
+  
+  let newlineIdx: number
+  while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+    const line = buffer.slice(0, newlineIdx).trim()
+    buffer = buffer.slice(newlineIdx + 1)
+    const claim = line ? parseClaim(line) : null
+    if (claim) await onClaim(claim)  // Immediately save to database
+  }
+}
+```
+
+<Tip>
+Streaming allows claims to appear in the UI as they're extracted, rather than waiting for the entire response to complete.
+</Tip>
+
+## Claim Schema Validation
+
+Every claim is validated using Effect Schema before storage:
+
+```typescript
+const ClaimSchema = Schema.Struct({
+  speaker: Schema.Union(Schema.Literal(0), Schema.Literal(1)),
+  claimText: Schema.String,
+  originalTranscriptExcerpt: Schema.String,
+})
+
+function parseClaim(line: string): ClaimData | null {
+  if (line === "NO_CLAIMS") return null
+  try {
+    return Schema.decodeUnknownSync(ClaimSchema)(JSON.parse(line))
+  } catch {
+    return null  // Malformed claims are silently dropped
+  }
+}
+```
+
+Invalid claims fail silently to prevent extraction errors from blocking the pipeline.
+
+## Trigger Mechanism
+
+Claim extraction is triggered automatically when speakers pause:
+
+```typescript
+connection.on(LiveTranscriptionEvents.UtteranceEnd, () => {
+  triggerExtraction({ debateId: activeDebateId })
+})
+```
+
+Deepgram fires `UtteranceEnd` after 1.5 seconds of silence. This schedules the extraction action:
+
+```typescript
+export const triggerExtraction = mutation({
+  handler: async (ctx, args) => {
+    await ctx.scheduler.runAfter(0, internal.claimExtraction.extract, {
+      debateId: args.debateId,
+    })
+  },
+})
+```
+
+## Deduplication Strategy
+
+To prevent processing the same transcript chunks multiple times:
+
+1. **Fetch unprocessed chunks**: Query only chunks where `processedForClaims: false`
+2. **Mark as processed immediately**: Before calling the LLM, update chunks to `processedForClaims: true`
+3. **Extract claims**: Send to Gemini and save results
+
+```typescript
+const chunks = await ctx.runQuery(
+  internal.transcriptChunks.getUnprocessed,
+  { debateId: args.debateId },
+)
+if (chunks.length === 0) return null
+
+// Mark processed BEFORE calling LLM to prevent duplicate extraction
+await ctx.runMutation(internal.transcriptChunks.markProcessed, {
+  chunkIds: chunks.map((c) => c._id),
+})
+```
+
+This ensures claims are never double-extracted even if multiple extraction jobs run concurrently.
+
+<Note>
+Conversation sessions are stored in the `extractionSessions` table and persist for the lifetime of the debate, enabling consistent context across hours-long discussions.
+</Note>
+
+## Automatic Fact-Check Pipeline
+
+As each claim is saved, it's immediately queued for fact-checking:
+
+```typescript
+const claimId = await ctx.db.insert("claims", {
+  ...args,
+  status: "pending",
+  extractedAt: Date.now(),
+})
+await ctx.scheduler.runAfter(0, internal.factCheck.check, { claimId })
+```
+
+This creates a seamless pipeline from audio → transcription → claim extraction → fact-checking without manual intervention.
+
+## Implementation Reference
+
+Key files:
+- `convex/claimExtraction.ts:99-168` - Main extraction logic with session management
+- `convex/claimExtraction.ts:30-75` - JSONL streaming and parsing
+- `convex/claimExtraction.ts:77-97` - System prompt construction
+- `convex/extractionSessions.ts` - Conversation history persistence

@@ -1,0 +1,148 @@
+---
+title: Introduction to Stanzo
+description: Real-time debate fact-checking powered by AI. Transcribe, extract claims, and verify facts as speakers talk.
+---
+
+# Introduction to Stanzo
+
+Stanzo is a real-time debate fact-checking platform that captures live audio, identifies factual claims, and verifies them against primary sources—all while the debate is happening.
+
+Every claim gets rated as **true**, **false**, **mixed**, or **unverifiable**, with citations linking back to authoritative sources.
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Set up your account and run your first debate session in under 5 minutes
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand how Stanzo processes audio through transcription, extraction, and fact-checking
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/debates">
+    Explore Convex mutations and queries for debates, claims, and transcripts
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/ntedvs/ganzo">
+    View the complete Next.js 16 and Convex implementation on GitHub
+  </Card>
+</CardGroup>
+
+## Core capabilities
+
+### Live transcription with speaker diarization
+
+Stanzo uses **Deepgram's nova-3 model** to transcribe debate audio in real-time. The transcription engine identifies which speaker (A or B) said what, so claims are automatically attributed to the correct person.
+
+```typescript
+// src/hooks/useDeepgram.ts:51-59
+const connection = client.listen.live({
+  model: "nova-3",
+  language: "en",
+  smart_format: true,
+  punctuate: true,
+  diarize: true,
+  interim_results: true,
+  utterance_end_ms: 1500,
+})
+```
+
+Transcript chunks are streamed to Convex and displayed in the UI with timestamps and speaker labels.
+
+### Multi-turn claim extraction
+
+**Gemini 2.0 Flash** analyzes transcript segments to identify factual claims like statistics, dates, and causal statements. The extraction engine maintains conversation history for the entire debate, so it:
+
+- **Doesn't re-extract** claims from previous turns
+- **Uses context** to resolve pronouns and references
+- **Extracts factual cores** from opinion-mixed statements
+
+```typescript
+// convex/claimExtraction.ts:78-96
+function buildSystemPrompt(speakerA: string, speakerB: string): string {
+  return `You are a factual claim extractor for a live debate between ${speakerA} (speaker 0) and ${speakerB} (speaker 1).
+
+Each turn, I provide a new transcript segment. You have the full conversation history.
+
+Rules:
+- ONLY extract claims from the NEW segment in my latest message
+- Do NOT re-extract claims from previous turns
+- Extract specific, verifiable factual claims (statistics, dates, named facts, causal claims)
+- Extract the factual core when mixed with opinion
+- Ignore purely opinion/prediction/subjective statements
+- Use context to resolve pronouns and references`
+}
+```
+
+Claims stream into the database as JSONL objects and appear in the UI immediately with a "pending" status.
+
+### Fact-checking with primary sources
+
+**Perplexity Sonar** verifies each claim by searching the web and consulting authoritative sources. The fact-checker returns:
+
+- **Status**: `true`, `false`, `mixed`, or `unverifiable`
+- **Verdict**: Brief explanation (~30 words)
+- **Correction**: If the claim is false or partially false, what's actually true
+- **Sources**: Array of citation URLs (e.g., bls.gov, fbi.gov)
+
+```typescript
+// convex/factCheck.ts:48-56
+messages: [
+  {
+    role: "system",
+    content:
+      "You are a fact-checker. Evaluate the following claim and respond with ONLY a JSON object containing: status (one of: true, false, mixed, unverifiable), verdict (brief explanation), correction (if false or mixed, the correct information; otherwise null).",
+  },
+  {
+    role: "user",
+    content: `Fact-check this claim: "${claimText}"`,
+  },
+]
+```
+
+### Real-time reactive UI
+
+Convex powers instant updates via reactive subscriptions. When a claim's status changes from `pending` → `checking` → `true`, the UI updates automatically without polling.
+
+```tsx
+// src/app/debates/new/page.tsx:22-23
+const chunks = useQuery(api.transcriptChunks.listByDebate, debateArgs)
+const claims = useQuery(api.claims.listByDebate, debateArgs)
+```
+
+The interface uses a two-panel layout: live transcript on the left, claims feed on the right with a resizable divider.
+
+## How it works
+
+Stanzo processes debates through a three-stage pipeline:
+
+**1. Record**  
+Start a debate and Stanzo captures every word from both speakers using Deepgram's live transcription API. Audio streams directly from your browser microphone to Deepgram's WebSocket endpoint.
+
+**2. Extract**  
+When a speaker pauses (1.5 second silence), unprocessed transcript chunks trigger a Gemini extraction session. Claims are identified using the full conversation history and saved to Convex with a `pending` status.
+
+**3. Verify**  
+Each new claim triggers an async fact-check action. Perplexity Sonar searches for evidence, rates the claim, and returns citations. The claim updates to its final verdict and appears in the sidebar.
+
+<Info>
+  The entire pipeline runs asynchronously. Transcription, extraction, and fact-checking happen in parallel, so you get results as fast as possible.
+</Info>
+
+## Tech stack
+
+Stanzo is built with modern web technologies optimized for real-time performance:
+
+| Layer | Technology |
+| --- | --- |
+| Frontend | Next.js 16, React 19, Tailwind CSS 4 |
+| Backend | Convex (serverless database + actions) |
+| Transcription | Deepgram nova-3 with speaker diarization |
+| Claim Extraction | Google Gemini 2.0 Flash |
+| Fact-Checking | Perplexity Sonar |
+| Auth | GitHub OAuth via Convex Auth |
+| Error Handling | Effect library (retries, timeouts) |
+
+## Next steps
+
+<Card title="Run your first debate" icon="play" href="/quickstart">
+  Follow the quickstart guide to authenticate, create a debate, and see claims verified in real-time
+</Card>
