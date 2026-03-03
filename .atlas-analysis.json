@@ -1,0 +1,92 @@
+{
+  "projectType": "saas",
+  "projectName": "Stanzo",
+  "projectDescription": "Real-time debate fact-checking with live transcription, claim extraction, and verification against primary sources.",
+  "theme": "aspen",
+  "primaryColor": "#000000",
+  "lightColor": "#888888",
+  "darkColor": "#111111",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/live-transcription",
+              "features/claim-extraction",
+              "features/fact-checking",
+              "features/real-time-updates"
+            ]
+          },
+          {
+            "group": "Technical Guides",
+            "pages": [
+              "guides/pipeline",
+              "guides/data-model",
+              "guides/authentication",
+              "guides/error-handling"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/environment-setup",
+              "deployment/configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Convex Functions",
+            "pages": [
+              "api/debates",
+              "api/claims",
+              "api/transcripts",
+              "api/extraction-sessions"
+            ]
+          },
+          {
+            "group": "Schema",
+            "pages": [
+              "api/schema"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time audio transcription with speaker diarization using Deepgram nova-3",
+    "Context-aware claim extraction with Gemini 2.0 Flash multi-turn sessions",
+    "Automated fact-checking via Perplexity Sonar with source citations",
+    "Live reactive updates using Convex subscriptions with no polling",
+    "Multi-turn extraction sessions to prevent duplicate claims and maintain context",
+    "Functional error handling with Effect library for retries and timeouts",
+    "GitHub OAuth authentication via Convex Auth"
+  ],
+  "publicApiSurface": [
+    "debates.create - Create a new debate session",
+    "debates.end - End an active debate and trigger final claim extraction",
+    "debates.get - Retrieve a specific debate by ID",
+    "debates.list - List all debates for the authenticated user",
+    "claims.listByDebate - Get all claims for a specific debate",
+    "transcriptChunks.save - Save transcription chunks from Deepgram",
+    "transcriptChunks.listByDebate - Retrieve transcript chunks for a debate",
+    "deepgramToken.generate - Generate temporary Deepgram API token",
+    "claimExtraction.extract - Extract claims from unprocessed transcript chunks",
+    "factCheck.check - Verify a claim using Perplexity Sonar"
+  ]
+}
