@@ -1,0 +1,95 @@
+---
+title: Deepgram token
+description: Generate temporary Deepgram API tokens for client-side audio streaming
+---
+
+## Overview
+
+The `deepgramToken` module provides a secure way to generate temporary API tokens for Deepgram's live transcription service. Tokens are short-lived (5 minutes) and scoped to authenticated users.
+
+<Info>
+This action mints a temporary token instead of exposing the master API key to the client. This is a security best practice for client-side WebSocket connections.
+</Info>
+
+## mint
+
+Generate a temporary Deepgram API token for the authenticated user.
+
+```typescript
+import { api } from "../convex/_generated/api"
+
+const token = await convex.action(api.deepgramToken.mint, {})
+console.log(token.token) // Temporary access token
+```
+
+### Authentication
+
+**Required**: User must be authenticated via Convex Auth. Returns `401` if not authenticated.
+
+### Parameters
+
+None. This action takes no arguments.
+
+### Returns
+
+<ResponseField name="token" type="string" required>
+  A temporary Deepgram API token valid for 5 minutes (300 seconds)
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+## Implementation Details
+
+### Token Lifecycle
+
+1. **Request**: Client calls `deepgramToken.mint` from authenticated session
+2. **Grant**: Convex action calls Deepgram's `/v1/auth/grant` endpoint with master API key
+3. **Return**: Temporary token sent to client
+4. **Expiry**: Token automatically expires after 5 minutes (TTL: 300 seconds)
+
+### Security Considerations
+
+<Warning>
+The master `DEEPGRAM_API_KEY` must be set as a Convex environment variable. Never expose it to the client.
+</Warning>
+
+**Token scoping**:
+- Tokens are tied to the requesting user's Convex session
+- Each token has a 5-minute TTL to limit exposure
+- Tokens cannot be refreshed; a new token must be minted after expiry
+
+**Error handling**:
+- Returns `401` if user is not authenticated
+- Throws error if `DEEPGRAM_API_KEY` environment variable is not set
+- Throws error if Deepgram API grant request fails
+
+### Usage in Client
+
+```typescript
+// src/hooks/useDeepgram.ts:42-47
+const mintToken = async () => {
+  const result = await convex.action(api.deepgramToken.mint, {})
+  return result.token
+}
+
+// Pass to Deepgram client
+const deepgram = createClient(mintedToken)
+```
+
+## Source Code Reference
+
+- Implementation: `convex/deepgramToken.ts:5-31`
+- Client usage: `src/hooks/useDeepgram.ts:42-47`
+- Deepgram grant API: `https://developers.deepgram.com/reference/temporary-token-creation`
+
+## Related
+
+- [Live Transcription](/features/live-transcription) - How Deepgram is used for audio streaming
+- [Authentication](/guides/authentication) - Convex Auth setup
+- [Environment Setup](/deployment/environment-setup) - Configuring `DEEPGRAM_API_KEY`

@@ -67,7 +67,8 @@
               "api/debates",
               "api/claims",
               "api/transcripts",
-              "api/extraction-sessions"
+              "api/extraction-sessions",
+              "api/deepgram-token"
             ]
           },
           {

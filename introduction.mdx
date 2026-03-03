@@ -49,7 +49,7 @@ Transcript chunks are streamed to Convex and displayed in the UI with timestamps
 
 ### Multi-turn claim extraction
 
-**Gemini 2.0 Flash** analyzes transcript segments to identify factual claims like statistics, dates, and causal statements. The extraction engine maintains conversation history for the entire debate, so it:
+**Gemini 2.5 Flash** analyzes transcript segments to identify factual claims like statistics, dates, and causal statements. The extraction engine maintains conversation history for the entire debate, so it:
 
 - **Doesn't re-extract** claims from previous turns
 - **Uses context** to resolve pronouns and references
@@ -136,7 +136,7 @@ Stanzo is built with modern web technologies optimized for real-time performance
 | Frontend | Next.js 16, React 19, Tailwind CSS 4 |
 | Backend | Convex (serverless database + actions) |
 | Transcription | Deepgram nova-3 with speaker diarization |
-| Claim Extraction | Google Gemini 2.0 Flash |
+| Claim Extraction | Google Gemini 2.5 Flash |
 | Fact-Checking | Perplexity Sonar |
 | Auth | GitHub OAuth via Convex Auth |
 | Error Handling | Effect library (retries, timeouts) |
